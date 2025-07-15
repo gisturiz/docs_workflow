@@ -1,0 +1,52 @@
+{
+    "Comment": "A workflow to process Discord insights and create Linear tickets.",
+    "StartAt": "Ingest Discord Messages",
+    "States": {
+      "Ingest Discord Messages": {
+        "Type": "Task",
+        "Resource": "${IngestDiscordFunctionArn}",
+        "Next": "Cluster and Summarize Insights"
+      },
+      "Cluster and Summarize Insights": {
+        "Type": "Task",
+        "Resource": "${ClusterInsightsFunctionArn}",
+        "ResultPath": "$.insights",
+        "Next": "Process Each Insight"
+      },
+      "Process Each Insight": {
+        "Type": "Map",
+        "InputPath": "$.insights",
+        "ItemsPath": "$.clusters",
+        "MaxConcurrency": 5,
+        "Iterator": {
+          "StartAt": "Find Relevant Docs",
+          "States": {
+            "Find Relevant Docs": {
+              "Type": "Task",
+              "Resource": "${FindDocsFunctionArn}",
+              "ResultPath": "$.documentation",
+              "Next": "Generate Suggestion"
+            },
+            "Generate Suggestion": {
+              "Type": "Task",
+              "Resource": "${GenerateSuggestionFunctionArn}",
+              "ResultPath": "$.suggestion",
+              "Next": "Create Linear Ticket"
+            },
+            "Create Linear Ticket": {
+              "Type": "Task",
+              "Resource": "${CreateLinearTicketFunctionArn}",
+              "ResultPath": "$.ticket",
+              "Next": "Store Ticket in DynamoDB"
+            },
+            "Store Ticket in DynamoDB": {
+              "Type": "Task",
+              "Resource": "${StoreInDynamoDBFunctionArn}",
+              "End": true
+            }
+          }
+        },
+        "End": true
+      }
+    }
+  }

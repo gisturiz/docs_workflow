@@ -1,0 +1,25 @@
+.venv
+
+# SAM build artifacts
+.aws-sam/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Local testing files
+.env
+env.json
+
+# IDE / OS files
+.vscode/
+.idea/
+*.DS_Store

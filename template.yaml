@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Workflow to gather insights from Discord, suggest doc changes, and create Linear tickets.
+
+# These are the configuration values you will provide during deployment.
+Parameters:
+  LinearProjectID:
+    Type: String
+    Description: The ID of the Linear project for Triage.
+  LinearTeamID:
+    Type: String
+    Description: The ID of the Linear Team for the Triage project.
+  DiscordChannelIDs:
+    Type: CommaDelimitedList
+    Description: Comma-separated list of Discord channel IDs to monitor.
+
+# These settings apply to all Lambda functions defined below, reducing repetition.
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 256
+    Runtime: python3.12
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        SECRETS_ARN: !Ref AWSSecuritySecrets
+        DYNAMODB_TABLE: !Ref TicketsTable
+
+Resources:
+  # This is the single IAM Role that all our functions will share.
+  # It has permissions to access Secrets Manager, DynamoDB, and be invoked by other services.
+  WorkflowLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [lambda.amazonaws.com] }
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: LambdaWorkflowPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['secretsmanager:GetSecretValue']
+                Resource: !Ref AWSSecuritySecrets
+              - Effect: Allow
+                Action: ['dynamodb:PutItem', 'dynamodb:UpdateItem']
+                Resource: !GetAtt TicketsTable.Arn
+
+  # The main Step Functions State Machine that orchestrates the workflow.
+  DocInsightStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/workflow.asl.json
+      DefinitionSubstitutions:
+        IngestDiscordFunctionArn: !GetAtt IngestDiscordFunction.Arn
+        ClusterInsightsFunctionArn: !GetAtt ClusterInsightsFunction.Arn
+        FindDocsFunctionArn: !GetAtt FindDocsFunction.Arn
+        GenerateSuggestionFunctionArn: !GetAtt GenerateSuggestionFunction.Arn
+        CreateLinearTicketFunctionArn: !GetAtt CreateLinearTicketFunction.Arn
+        StoreInDynamoDBFunctionArn: !GetAtt StoreInDynamoDBFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref IngestDiscordFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ClusterInsightsFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FindDocsFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref GenerateSuggestionFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CreateLinearTicketFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StoreInDynamoDBFunction
+
+  # The scheduled trigger that runs the workflow every 7 days.
+  ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "rate(7 days)"
+      State: ENABLED
+      Targets:
+        - Arn: !Ref DocInsightStateMachine
+          Id: "DocInsightStateMachineTarget"
+          RoleArn: !GetAtt EventBridgeToStepFunctionsRole.Arn
+
+  # The IAM Role that allows EventBridge to start an execution of our Step Function.
+  EventBridgeToStepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: [events.amazonaws.com] }
+            Action: ['sts:AssumeRole']
+      Policies:
+        - PolicyName: AllowStepFunctionsExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'states:StartExecution'
+                Resource: !Ref DocInsightStateMachine
+
+  # --- Lambda Function Definitions ---
+
+  IngestDiscordFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers.ingest_discord.handler
+      Role: !GetAtt WorkflowLambdaRole.Arn
+      Environment:
+        Variables:
+          DISCORD_CHANNEL_IDS: !Join [",", !Ref DiscordChannelIDs]
+
+  ClusterInsightsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers.cluster_insights.handler
+      Role: !GetAtt WorkflowLambdaRole.Arn
+
+  FindDocsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers.find_docs.handler
+      Role: !GetAtt WorkflowLambdaRole.Arn
+
+  GenerateSuggestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers.generate_suggestion.handler
+      Role: !GetAtt WorkflowLambdaRole.Arn
+
+  CreateLinearTicketFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers.create_linear_ticket.handler
+      Role: !GetAtt WorkflowLambdaRole.Arn
+      Environment:
+        Variables:
+          LINEAR_PROJECT_ID: !Ref LinearProjectID
+          LINEAR_TEAM_ID: !Ref LinearTeamID
+
+  StoreInDynamoDBFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers.store_in_dynamodb.handler
+      Role: !GetAtt WorkflowLambdaRole.Arn
+
+  # --- Resources for the Feedback Loop ---
+
+  ProcessLinearWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers.process_linear_webhook.handler
+      Role: !GetAtt WorkflowLambdaRole.Arn
+      Events:
+        WebhookApi:
+          Type: HttpApi
+          Properties:
+            Path: /linear-webhook
+            Method: post
+  
+  DebugSecretsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handlers.debug_secrets.handler
+      Role: !GetAtt WorkflowLambdaRole.Arn
+      Environment:
+        Variables:
+          SECRETS_ARN: !Ref AWSSecuritySecrets
+          DYNAMODB_TABLE: !Ref TicketsTable
+
+  # --- Database and Secrets Definitions ---
+
+  # Defines the DynamoDB table for tracking ticket status.
+  TicketsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: ticket_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ticket_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # Defines the placeholder for our secrets in AWS Secrets Manager.
+  AWSSecuritySecrets:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: "API Keys for Discord, Linear, OpenAI, and Vector DB"
+      SecretString: '{"DISCORD_BOT_TOKEN": "placeholder", "LINEAR_API_KEY": "placeholder", "OPENAI_API_KEY": "placeholder", "PINECONE_API_KEY": "placeholder"}'
+
+# These are the values that will be output to the console after a successful deployment.
+Outputs:
+  StateMachineArn:
+    Description: "ARN of the main Step Functions state machine"
+    Value: !Ref DocInsightStateMachine
+  WebhookApiUrl:
+    Description: "URL for the Linear Webhook"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/linear-webhook"
