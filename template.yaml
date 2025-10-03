@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   Workflow to gather insights from Discord, suggest doc changes, and create Linear tickets.
@@ -34,23 +34,23 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal: { Service: [lambda.amazonaws.com] }
-            Action: ['sts:AssumeRole']
+            Action: ["sts:AssumeRole"]
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: LambdaWorkflowPolicy
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: ['secretsmanager:GetSecretValue']
+                Action: ["secretsmanager:GetSecretValue"]
                 Resource: !Ref AWSSecuritySecrets
               - Effect: Allow
-                Action: ['dynamodb:PutItem', 'dynamodb:UpdateItem']
+                Action: ["dynamodb:PutItem", "dynamodb:UpdateItem"]
                 Resource: !GetAtt TicketsTable.Arn
 
   # The main Step Functions State Machine that orchestrates the workflow.
@@ -95,18 +95,18 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal: { Service: [events.amazonaws.com] }
-            Action: ['sts:AssumeRole']
+            Action: ["sts:AssumeRole"]
       Policies:
         - PolicyName: AllowStepFunctionsExecution
           PolicyDocument:
-            Version: '2012-10-17'
+            Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: 'states:StartExecution'
+                Action: "states:StartExecution"
                 Resource: !Ref DocInsightStateMachine
 
   # --- Lambda Function Definitions ---
@@ -162,19 +162,41 @@ Resources:
 
   # --- Resources for the Feedback Loop ---
 
+  LinearWebhookApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: Prod
+
   ProcessLinearWebhookFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: src/
       Handler: handlers.process_linear_webhook.handler
       Role: !GetAtt WorkflowLambdaRole.Arn
-      Events:
-        WebhookApi:
-          Type: HttpApi
-          Properties:
-            Path: /linear-webhook
-            Method: post
-  
+
+  LinearWebhookIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref LinearWebhookApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProcessLinearWebhookFunction.Arn}/invocations"
+      PayloadFormatVersion: "2.0"
+
+  LinearWebhookRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref LinearWebhookApi
+      RouteKey: "POST /linear-webhook"
+      Target: !Join ["/", ["integrations", !Ref LinearWebhookIntegration]]
+
+  ProcessLinearWebhookFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ProcessLinearWebhookFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${LinearWebhookApi}/*/*"
+
   DebugSecretsFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -214,4 +236,4 @@ Outputs:
     Value: !Ref DocInsightStateMachine
   WebhookApiUrl:
     Description: "URL for the Linear Webhook"
-    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/linear-webhook"
+    Value: !Sub "https://d${LinearWebhookApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/linear-webhook"
