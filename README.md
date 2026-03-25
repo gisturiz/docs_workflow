@@ -1,4 +1,4 @@
-## docs_workflow
+## AI State Machine Flow for Discord feedback to Linear Doc Improments
 
 Automation to turn real-world developer feedback into actionable documentation improvements. It ingests messages from Discord, clusters them with LLM + embeddings, finds the most relevant doc page from a vector DB, asks an LLM to propose concrete edits, creates a Linear issue, and stores the ticket + suggestion for a feedback loop that updates status when the Linear issue changes.
 
