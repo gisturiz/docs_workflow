@@ -164,8 +164,5 @@ aws secretsmanager put-secret-value \
 - IAM role `WorkflowLambdaRole` grants only needed access (Secrets Manager read, DynamoDB write, Lambda invoke via state machine). API Gateway is allowed to invoke `process_linear_webhook`.
 - Do not commit secrets. Use AWS Secrets Manager in production.
 
-### License
-Add a license file if you plan to distribute this project.
-
 ### Contributing
 Open a PR or issue with improvements, bug reports, or feature ideas.
